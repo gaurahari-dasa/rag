@@ -22,10 +22,8 @@ def run_query(sql):
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
 
-def ask(question):
-    schema = get_schema()
-
-    # Step 1: generate SQL from the question
+def ask(question, schema, history):
+    # Step 1: generate SQL — schema is cached after the first call
     sql_response = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=1024,
@@ -43,23 +41,55 @@ def ask(question):
         messages=[{"role": "user", "content": question}],
     )
     sql = sql_response.content[0].text.strip()
-    print(f"Generated SQL: {sql}\n")
+    print(f"\n  SQL: {sql}")
 
     # Step 2: execute the SQL
     rows = run_query(sql)
 
-    # Step 3: turn the raw result into a natural language answer
+    # Step 3: answer using conversation history for follow-up context
+    messages = history + [
+        {
+            "role": "user",
+            "content": f"Question: {question}\nSQL result: {rows}",
+        }
+    ]
     answer_response = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=512,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Question: {question}\nSQL result: {rows}\nAnswer concisely:",
-            }
-        ],
+        system="You are a data analyst. Given a user question and its SQL query result, answer clearly and concisely in plain English. Do not include SQL in your response.",
+        messages=messages,
     )
-    return answer_response.content[0].text
+    return answer_response.content[0].text, rows
 
 
-print(ask("How many contacts are there?"))
+def main():
+    print("Connecting to database...")
+    schema = get_schema()
+    print("Ready. Ask anything about your database, or type 'exit' to quit.\n")
+
+    history = []
+
+    while True:
+        try:
+            question = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not question or question.lower() in ("exit", "quit"):
+            print("Goodbye!")
+            break
+
+        answer, rows = ask(question, schema, history)
+        print(f"\nAssistant: {answer}\n")
+
+        # Keep history so follow-up questions have context
+        history.append({
+            "role": "user",
+            "content": f"Question: {question}\nSQL result: {rows}",
+        })
+        history.append({"role": "assistant", "content": answer})
+
+
+if __name__ == "__main__":
+    main()

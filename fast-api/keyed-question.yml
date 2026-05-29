@@ -1,0 +1,21 @@
+info:
+  name: keyed-question
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{baseUrl}}/ask"
+  body:
+    type: json
+    data: |-
+      {
+        "question": "How many contacts are present?"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
