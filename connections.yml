@@ -1,0 +1,8 @@
+default: krishna_life
+
+connections:
+  krishna_life:
+    url: mysql+pymysql://root@localhost/local_krishna_life
+  # Add more Laravel app connections below:
+  # donation_app:
+  #   url: mysql+pymysql://user:pass@host/donation_db

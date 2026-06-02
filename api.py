@@ -3,24 +3,25 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import uuid
 import anthropic
-from app import get_schema, run_query
+from app import get_schema, run_query, resolve_connection
 
 app = FastAPI()
 client = anthropic.Anthropic()
 
-_schema: Optional[str] = None
-_sessions: Dict[str, list] = {}  # session_id -> conversation history
+_schemas: Dict[str, str] = {}                    # connection_name -> schema DDL
+_sessions: Dict[str, tuple[str, list]] = {}      # session_id -> (conn_name, history)
 
 
-@app.on_event("startup")
-def startup() -> None:
-    global _schema
-    _schema = get_schema()
+def _get_schema(conn_name: str, db_url: str) -> str:
+    if conn_name not in _schemas:
+        _schemas[conn_name] = get_schema(db_url)
+    return _schemas[conn_name]
 
 
 class AskRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
+    connection: Optional[str] = None    # named connection from connections.yml
 
 
 class AskResponse(BaseModel):
@@ -28,12 +29,27 @@ class AskResponse(BaseModel):
     sql: str
     rows: List[Dict[str, Any]]
     session_id: str
+    connection: str
 
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest) -> AskResponse:
+    try:
+        conn_name, db_url = resolve_connection(req.connection)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     session_id = req.session_id or str(uuid.uuid4())
-    history = _sessions.get(session_id, [])
+    session_conn_name, history = _sessions.get(session_id, (conn_name, []))
+
+    # Lock a session to its first connection so cross-DB mixing is caught early.
+    if session_conn_name != conn_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Session was started with a different connection."
+        )
+
+    schema = _get_schema(conn_name, db_url)
 
     sql_response = client.messages.create(
         model="claude-opus-4-7",
@@ -44,7 +60,7 @@ def ask(req: AskRequest) -> AskResponse:
                 "text": (
                     "You are a MySQL expert. Given a database schema and a question, "
                     "return ONLY a valid SQL query — no explanation, no markdown fences.\n\n"
-                    f"Schema:\n{_schema}"
+                    f"Schema:\n{schema}"
                 ),
                 "cache_control": {"type": "ephemeral"},
             }
@@ -54,7 +70,7 @@ def ask(req: AskRequest) -> AskResponse:
     sql = sql_response.content[0].text.strip()
 
     try:
-        rows = run_query(sql)
+        rows = run_query(sql, db_url)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"SQL execution failed: {exc}")
 
@@ -72,9 +88,9 @@ def ask(req: AskRequest) -> AskResponse:
     )
     answer = answer_response.content[0].text
 
-    _sessions[session_id] = messages + [{"role": "assistant", "content": answer}]
+    _sessions[session_id] = (conn_name, messages + [{"role": "assistant", "content": answer}])
 
-    return AskResponse(answer=answer, sql=sql, rows=rows, session_id=session_id)
+    return AskResponse(answer=answer, sql=sql, rows=rows, session_id=session_id, connection=conn_name)
 
 
 @app.delete("/session/{session_id}")

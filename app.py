@@ -1,11 +1,43 @@
 import anthropic
+import yaml
+from pathlib import Path
+from typing import Dict
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
-engine = create_engine("mysql+pymysql://root@localhost/local_krishna_life")
 client = anthropic.Anthropic()
 
+_engines: Dict[str, Engine] = {}
+_config: dict = {}
 
-def get_schema():
+
+def _load_config() -> dict:
+    global _config
+    if not _config:
+        config_path = Path(__file__).parent / "connections.yml"
+        with open(config_path) as f:
+            _config = yaml.safe_load(f)
+    return _config
+
+
+def resolve_connection(name: str | None = None) -> tuple[str, str]:
+    """Return (connection_name, db_url) for the given name, or the default."""
+    cfg = _load_config()
+    name = name or cfg["default"]
+    connections = cfg.get("connections", {})
+    if name not in connections:
+        raise KeyError(f"Unknown connection: '{name}'. Known: {list(connections)}")
+    return name, connections[name]["url"]
+
+
+def get_engine(db_url: str) -> Engine:
+    if db_url not in _engines:
+        _engines[db_url] = create_engine(db_url)
+    return _engines[db_url]
+
+
+def get_schema(db_url: str) -> str:
+    engine = get_engine(db_url)
     with engine.connect() as conn:
         tables = conn.execute(text("SHOW TABLES")).fetchall()
         parts = []
@@ -15,15 +47,15 @@ def get_schema():
         return "\n\n".join(parts)
 
 
-def run_query(sql):
+def run_query(sql: str, db_url: str) -> list[dict]:
+    engine = get_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(text(sql))
         columns = list(result.keys())
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
 
-def ask(question, schema, history):
-    # Step 1: generate SQL — schema is cached after the first call
+def ask(question, schema, history, db_url):
     sql_response = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=1024,
@@ -43,10 +75,8 @@ def ask(question, schema, history):
     sql = sql_response.content[0].text.strip()
     print(f"\n  SQL: {sql}")
 
-    # Step 2: execute the SQL
-    rows = run_query(sql)
+    rows = run_query(sql, db_url)
 
-    # Step 3: answer using conversation history for follow-up context
     messages = history + [
         {
             "role": "user",
@@ -64,7 +94,8 @@ def ask(question, schema, history):
 
 def main():
     print("Connecting to database...")
-    schema = get_schema()
+    _, db_url = resolve_connection()
+    schema = get_schema(db_url)
     print("Ready. Ask anything about your database, or type 'exit' to quit.\n")
 
     history = []
@@ -80,10 +111,9 @@ def main():
             print("Goodbye!")
             break
 
-        answer, rows = ask(question, schema, history)
+        answer, rows = ask(question, schema, history, db_url)
         print(f"\nAssistant: {answer}\n")
 
-        # Keep history so follow-up questions have context
         history.append({
             "role": "user",
             "content": f"Question: {question}\nSQL result: {rows}",
