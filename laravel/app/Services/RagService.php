@@ -45,4 +45,26 @@ class RagService
     {
         Http::timeout(10)->delete("{$this->baseUrl}/session/{$sessionId}");
     }
+
+    /**
+     * @return array{text: string}
+     * @throws RuntimeException
+     */
+    public function transcribe(\Illuminate\Http\UploadedFile $audio): array
+    {
+        try {
+            $response = Http::timeout(60)
+                ->attach('audio', $audio->getContent(), $audio->getClientOriginalName(), [
+                    'Content-Type' => $audio->getMimeType() ?? 'audio/webm',
+                ])
+                ->post("{$this->baseUrl}/transcribe");
+            $response->throw();
+        } catch (RequestException $e) {
+            throw new RuntimeException(
+                'Transcription error: ' . ($e->response->json('detail') ?? $e->getMessage())
+            );
+        }
+
+        return $response->json();
+    }
 }

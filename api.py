@@ -1,11 +1,24 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import uuid
+import tempfile
+import os
 import anthropic
+import whisper
 from app import get_schema, run_query, resolve_connection
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_whisper_model = whisper.load_model("base")
 client = anthropic.Anthropic()
 
 _schemas: Dict[str, str] = {}                    # connection_name -> schema DDL
@@ -97,3 +110,16 @@ def ask(req: AskRequest) -> AskResponse:
 def clear_session(session_id: str) -> Dict[str, str]:
     _sessions.pop(session_id, None)
     return {"cleared": session_id}
+
+
+@app.post("/transcribe")
+async def transcribe(audio: UploadFile = File(...)):
+    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await audio.read())
+        tmp_path = tmp.name
+    try:
+        result = _whisper_model.transcribe(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+    return {"text": result["text"].strip()}

@@ -8,3 +8,4 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/rag/ask', [RagController::class, 'ask']);
 Route::delete('/rag/session/{sessionId}', [RagController::class, 'clearSession']);
+Route::post('/rag/transcribe', [RagController::class, 'transcribe']);

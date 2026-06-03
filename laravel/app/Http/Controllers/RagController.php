@@ -40,4 +40,17 @@ class RagController extends Controller
         $this->rag->clearSession($sessionId);
         return response()->json(['cleared' => $sessionId]);
     }
+
+    public function transcribe(Request $request): JsonResponse
+    {
+        $request->validate(['audio' => 'required|file|mimes:webm,mp4,mpeg,wav,mpga,m4a|max:25600']);
+
+        try {
+            $result = $this->rag->transcribe($request->file('audio'));
+        } catch (\RuntimeException $e) {
+            return response()->json(['error' => $e->getMessage()], 502);
+        }
+
+        return response()->json($result);
+    }
 }
